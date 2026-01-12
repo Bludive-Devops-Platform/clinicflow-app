@@ -1,0 +1,34 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+coverage/
+out/
+.next/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Prisma
+prisma/.env
+
+# Docker
+*.tar
+
+# Misc
+tmp/
+*.log

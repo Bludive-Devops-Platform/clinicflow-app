@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobType {
+  BOOKING_CONFIRMATION
+  APPOINTMENT_REMINDER
+}
+
+enum JobStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model NotificationJob {
+  id        String    @id @default(uuid())
+  type      JobType
+  recipient String
+  subject   String
+  payload   Json
+  status    JobStatus @default(PENDING)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  deliveries DeliveryLog[]
+}
+
+model DeliveryLog {
+  id        String   @id @default(uuid())
+  jobId     String
+  provider  String   // "smtp"
+  success   Boolean
+  message   String?
+  sentAt    DateTime @default(now())
+
+  job NotificationJob @relation(fields: [jobId], references: [id])
+
+  @@index([jobId])
+}

@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppointmentStatus {
+  BOOKED
+  RESCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+model ClinicService {
+  id              String   @id @default(uuid())
+  name            String   @unique
+  durationMinutes Int
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  appointments Appointment[]
+}
+
+model Provider {
+  id        String   @id @default(uuid())
+  userId    String   @unique // from Identity service
+  specialty String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  availability AvailabilityBlock[]
+  appointments Appointment[]
+}
+
+model AvailabilityBlock {
+  id         String   @id @default(uuid())
+  providerId String
+  date       DateTime // date-only usage (store as date, we’ll normalize)
+  startTime  String // "09:00"
+  endTime    String // "12:00"
+  createdAt  DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id])
+
+  @@index([providerId, date])
+}
+
+model Appointment {
+  id            String            @id @default(uuid())
+  patientUserId String // from Identity
+  providerId    String
+  serviceId     String
+  startAt       DateTime
+  endAt         DateTime
+  status        AppointmentStatus @default(BOOKED)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  provider Provider      @relation(fields: [providerId], references: [id])
+  service  ClinicService @relation(fields: [serviceId], references: [id])
+
+  @@index([patientUserId])
+  @@index([providerId, startAt])
+}

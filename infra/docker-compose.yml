@@ -1,0 +1,178 @@
+version: "3.9"
+
+services:
+  # -------------------------
+  # Databases
+  # -------------------------
+  identity-db:
+    image: postgres:16-alpine
+    container_name: clinicflow-identity-db
+    environment:
+      POSTGRES_DB: identity_db
+      POSTGRES_USER: identity_user
+      POSTGRES_PASSWORD: identity_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - identity_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity_user -d identity_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  schedule-db:
+    image: postgres:16-alpine
+    container_name: clinicflow-schedule-db
+    environment:
+      POSTGRES_DB: schedule_db
+      POSTGRES_USER: schedule_user
+      POSTGRES_PASSWORD: schedule_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - schedule_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U schedule_user -d schedule_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  profiles-db:
+    image: postgres:16-alpine
+    container_name: clinicflow-profiles-db
+    environment:
+      POSTGRES_DB: profiles_db
+      POSTGRES_USER: profiles_user
+      POSTGRES_PASSWORD: profiles_pass
+    ports:
+      - "5435:5432"
+    volumes:
+      - profiles_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profiles_user -d profiles_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  notify-db:
+    image: postgres:16-alpine
+    container_name: clinicflow-notify-db
+    environment:
+      POSTGRES_DB: notify_db
+      POSTGRES_USER: notify_user
+      POSTGRES_PASSWORD: notify_pass
+    ports:
+      - "5436:5432"
+    volumes:
+      - notify_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notify_user -d notify_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -------------------------
+  # Email sink (local demo)
+  # -------------------------
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: clinicflow-mailhog
+    ports:
+      - "8025:8025"  # Web UI
+      - "1025:1025"  # SMTP
+
+  # -------------------------
+  # Backend services
+  # -------------------------
+  identity:
+    image: clinicflow-identity:v1
+    container_name: clinicflow-identity
+    environment:
+      PORT: "3000"
+      DATABASE_URL: "postgresql://identity_user:identity_pass@identity-db:5432/identity_db?schema=public"
+      CORS_ORIGINS: "http://localhost:3005"
+      JWT_SECRET: "P@ssw0rd123"
+    ports:
+      - "3000:3000"
+    depends_on:
+      identity-db:
+        condition: service_healthy
+
+  scheduling:
+    image: clinicflow-scheduling:v1
+    container_name: clinicflow-scheduling
+    environment:
+      PORT: "3002"
+      DATABASE_URL: "postgresql://schedule_user:schedule_pass@schedule-db:5432/schedule_db?schema=public"
+      CORS_ORIGINS: "http://localhost:3005"
+      NOTIFICATIONS_BASE_URL: "http://notifications:3004"
+      IDENTITY_BASE_URL: "http://identity:3000"
+    ports:
+      - "3002:3002"
+    depends_on:
+      schedule-db:
+        condition: service_healthy
+      notifications:
+        condition: service_started
+
+  profiles:
+    image: clinicflow-profiles:v1
+    container_name: clinicflow-profiles
+    environment:
+      PORT: "3003"
+      DATABASE_URL: "postgresql://profiles_user:profiles_pass@profiles-db:5432/profiles_db?schema=public"
+      CORS_ORIGINS: "http://localhost:3005"
+    ports:
+      - "3003:3003"
+    depends_on:
+      profiles-db:
+        condition: service_healthy
+
+  notifications:
+    image: clinicflow-notifications:v1
+    container_name: clinicflow-notifications
+    environment:
+      PORT: "3004"
+      DATABASE_URL: "postgresql://notify_user:notify_pass@notify-db:5432/notify_db?schema=public"
+      CORS_ORIGINS: "http://localhost:3005"
+      SMTP_HOST: "mailhog"
+      SMTP_PORT: "1025"
+      SMTP_FROM: "no-reply@clinicflow.com"
+    ports:
+      - "3004:3004"
+    depends_on:
+      notify-db:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+
+  # -------------------------
+  # Web UI
+  # -------------------------
+  web:
+    image: clinicflow-web:v1
+    container_name: clinicflow-web
+    environment:
+      PORT: "3005"
+      NEXT_PUBLIC_IDENTITY_API: "http://localhost:3000"
+      NEXT_PUBLIC_SCHEDULING_API: "http://localhost:3002"
+      NEXT_PUBLIC_PROFILES_API: "http://localhost:3003"
+      NEXT_PUBLIC_NOTIFICATIONS_API: "http://localhost:3004"
+    ports:
+      - "3005:3005"
+    depends_on:
+      identity:
+        condition: service_started
+      scheduling:
+        condition: service_started
+      profiles:
+        condition: service_started
+      notifications:
+        condition: service_started
+
+volumes:
+  identity_db_data:
+  schedule_db_data:
+  profiles_db_data:
+  notify_db_data:

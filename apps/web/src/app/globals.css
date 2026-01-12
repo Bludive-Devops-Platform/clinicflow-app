@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* =========================
+   ClinicFlow Neon (Bright)
+   ========================= */
+:root {
+  /* Core */
+  --background: #f7fbff;      /* soft ice blue */
+  --foreground: #081226;      /* deep navy text */
+
+  /* Brand */
+  --primary: #00E5FF;         /* neon cyan */
+  --secondary: #7C4DFF;       /* neon violet */
+  --accent: #00FFB2;          /* neon mint */
+  --danger: #FF3D71;          /* neon rose */
+
+  /* Surfaces */
+  --card: #ffffff;
+  --border: rgba(8, 18, 38, 0.12);
+
+  /* Text tones */
+  --muted: rgba(8, 18, 38, 0.65);
+  --muted-2: rgba(8, 18, 38, 0.45);
+
+  /* Glow helpers */
+  --glow-cyan: rgba(0, 229, 255, 0.25);
+  --glow-violet: rgba(124, 77, 255, 0.22);
+  --glow-mint: rgba(0, 255, 178, 0.18);
+}
+
+/* IMPORTANT:
+   Remove dark-mode override so it stays bright and clinic-friendly.
+   If you still want dark mode later, we can implement a proper toggle.
+*/
+/*
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+*/
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* Global base */
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* =========================
+   Nice bright “clinic glow” background utility
+   Use: className="clinic-bg"
+   ========================= */
+.clinic-bg {
+  background:
+    radial-gradient(900px circle at 12% 10%, var(--glow-cyan), transparent 60%),
+    radial-gradient(900px circle at 88% 20%, var(--glow-mint), transparent 55%),
+    radial-gradient(1000px circle at 50% 95%, var(--glow-violet), transparent 60%),
+    linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
+}
+
+/* =========================
+   Neon button (optional)
+   Use: className="btn-neon"
+   ========================= */
+.btn-neon {
+  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  color: #071022;
+  border: 1px solid rgba(8, 18, 38, 0.10);
+  box-shadow: 0 10px 30px rgba(0, 229, 255, 0.14), 0 8px 22px rgba(124, 77, 255, 0.12);
+}
+.btn-neon:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+}
+
+/* Soft card */
+.card-soft {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(8, 18, 38, 0.06);
+  border-radius: 1.25rem;
+}
+
+/* Inputs */
+.input-soft {
+  background: #ffffff;
+  border: 1px solid rgba(8, 18, 38, 0.14);
+  border-radius: 0.9rem;
+}
+.input-soft:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--glow-cyan);
+  border-color: rgba(0, 229, 255, 0.55);
+}

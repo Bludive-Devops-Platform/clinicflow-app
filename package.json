@@ -1,0 +1,10 @@
+{
+  "name": "clinicflow",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "scripts": {
+    "db:up": "docker compose -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose -f infra/docker-compose.yml down",
+    "db:logs": "docker compose -f infra/docker-compose.yml logs -f"
+  }
+}
