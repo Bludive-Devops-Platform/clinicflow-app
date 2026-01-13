@@ -77,7 +77,7 @@ This enforces service boundaries and clean data ownership.
 
 ---
 
-## Key workflows (what to demo)
+## Key workflows
 
 ### Patient flow
 
