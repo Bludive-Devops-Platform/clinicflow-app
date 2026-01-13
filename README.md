@@ -24,6 +24,12 @@ ClinicFlow solves this by providing:
 
 ---
 
+## Architecture diagram
+
+[![ClinicFlow Architecture](docs/Architectural_Diagram.png)](docs/Architectural_Diagram.png)
+
+---
+
 ## High-level architecture
 
 ClinicFlow consists of **4 backend services + 1 web UI**:
