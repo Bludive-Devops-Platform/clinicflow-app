@@ -4,7 +4,7 @@ pipeline {
 
   environment {
     // Your GitOps repo over HTTPS
-    GITOPS_REPO = 'https://YOUR_GIT_HOST/YOURORG/clinicflow-gitops.git'
+    GITOPS_REPO = 'https://github.com/Bludive-Devops-Platform/clinicflow-gitops.git'
     GITOPS_BRANCH = 'main'
 
     // Used as image tag
