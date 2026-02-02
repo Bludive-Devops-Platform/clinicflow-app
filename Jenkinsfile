@@ -18,6 +18,7 @@ pipeline {
     IMG_WEB           = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-web"
 
     // GitOps repo (edit to your real URL)
+    // IMPORTANT: Use a plain https URL here (no bash tricks).
     GITOPS_REPO_URL = "https://github.com/Bludive-Devops-Platform/clinicflow-gitops.git"
     GITOPS_BRANCH   = "main"
   }
@@ -67,14 +68,12 @@ pipeline {
               targets = ["identity","scheduling","profiles","notifications","web"]
               changedFiles = "(FORCE_ALL enabled)"
             } else if (env.IS_PR == "true") {
-              // PR diff: compare PR HEAD against target branch (usually origin/main)
               def targetBranch = env.CHANGE_TARGET ? env.CHANGE_TARGET : "main"
               changedFiles = sh(
                 script: "git diff --name-only origin/${targetBranch}...HEAD",
                 returnStdout: true
               ).trim()
             } else {
-              // Main build diff: compare last commit to current commit
               changedFiles = sh(
                 script: "git diff --name-only HEAD~1..HEAD",
                 returnStdout: true
@@ -151,21 +150,11 @@ pipeline {
           def targets = env.TARGETS.tokenize(',')
 
           for (t in targets) {
-            if (t == "identity") {
-              sh "docker push ${IMG_IDENTITY}:${IMAGE_TAG}"
-            }
-            if (t == "scheduling") {
-              sh "docker push ${IMG_SCHEDULING}:${IMAGE_TAG}"
-            }
-            if (t == "profiles") {
-              sh "docker push ${IMG_PROFILES}:${IMAGE_TAG}"
-            }
-            if (t == "notifications") {
-              sh "docker push ${IMG_NOTIFICATIONS}:${IMAGE_TAG}"
-            }
-            if (t == "web") {
-              sh "docker push ${IMG_WEB}:${IMAGE_TAG}"
-            }
+            if (t == "identity")      sh "docker push ${IMG_IDENTITY}:${IMAGE_TAG}"
+            if (t == "scheduling")    sh "docker push ${IMG_SCHEDULING}:${IMAGE_TAG}"
+            if (t == "profiles")      sh "docker push ${IMG_PROFILES}:${IMAGE_TAG}"
+            if (t == "notifications") sh "docker push ${IMG_NOTIFICATIONS}:${IMAGE_TAG}"
+            if (t == "web")           sh "docker push ${IMG_WEB}:${IMAGE_TAG}"
           }
         }
       }
@@ -194,11 +183,17 @@ pipeline {
       when { expression { return env.IS_PR == "false" && !params.DRY_RUN && env.TARGETS?.trim() } }
       steps {
         withCredentials([usernamePassword(credentialsId: 'gitops-token', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+          script {
+            // Build an authenticated clone URL safely in Groovy
+            def authedRepo = env.GITOPS_REPO_URL.replace("https://", "https://${GIT_USER}:${GIT_TOKEN}@")
+            env.GITOPS_AUTHED_URL = authedRepo
+          }
+
           sh """
             set -e
 
             rm -rf /tmp/clinicflow-gitops
-            git clone -b ${GITOPS_BRANCH} https://${GIT_USER}:${GIT_TOKEN}@${GITOPS_REPO_URL#https://} /tmp/clinicflow-gitops
+            git clone -b ${GITOPS_BRANCH} "${GITOPS_AUTHED_URL}" /tmp/clinicflow-gitops
             cd /tmp/clinicflow-gitops
 
             VALUES_FILE="environments/${ENV}/values.yaml"
@@ -252,8 +247,6 @@ PY
             echo "✅ PR build complete: Built ${env.TARGETS} tag=${env.IMAGE_TAG}. (No push/deploy)"
           } else if (params.DRY_RUN) {
             echo "✅ Main build DRY_RUN complete: Built ${env.TARGETS} tag=${env.IMAGE_TAG}. (No push/deploy)"
-          } else if (params.ENV == "staging" || params.ENV == "prod") {
-            echo "✅ Main build complete: Built+pushed ${env.TARGETS} tag=${env.IMAGE_TAG}. Approved + GitOps updated for ENV=${params.ENV}."
           } else {
             echo "✅ Main build complete: Built+pushed ${env.TARGETS} tag=${env.IMAGE_TAG}. GitOps updated for ENV=${params.ENV}."
           }
