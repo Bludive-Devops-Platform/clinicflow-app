@@ -1,0 +1,39 @@
+pipeline {
+  agent any
+  options { timestamps() }
+
+  parameters {
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Required. Example: sha-abc1234')
+  }
+
+  environment {
+    IMAGE_REPO = 'docker.io/bludivehub/clinicflow-web'
+  }
+
+  stages {
+    stage('Validate') {
+      steps {
+        script {
+          if (!params.IMAGE_TAG?.trim()) error("IMAGE_TAG is required")
+        }
+      }
+    }
+
+    stage('Build') {
+      steps {
+        sh "docker build -t ${IMAGE_REPO}:${params.IMAGE_TAG} ."
+      }
+    }
+
+    stage('Push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh """
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin docker.io
+            docker push ${IMAGE_REPO}:${params.IMAGE_TAG}
+          """
+        }
+      }
+    }
+  }
+}

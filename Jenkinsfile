@@ -1,259 +1,166 @@
 pipeline {
   agent any
-
-  parameters {
-    choice(name: 'ENV', choices: ['dev', 'staging', 'prod'], description: 'Environment to update in GitOps on main builds')
-    booleanParam(name: 'FORCE_ALL', defaultValue: false, description: 'Build all services regardless of diff')
-    booleanParam(name: 'DRY_RUN', defaultValue: false, description: 'If true on main, do not push images or update GitOps')
-  }
+  options { timestamps() }
 
   environment {
-    DOCKER_REGISTRY  = "docker.io"
-    DOCKER_NAMESPACE = "bludivehub"
+    // Your GitOps repo over HTTPS
+    GITOPS_REPO = 'https://YOUR_GIT_HOST/YOURORG/clinicflow-gitops.git'
+    GITOPS_BRANCH = 'main'
 
-    IMG_IDENTITY      = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-identity"
-    IMG_SCHEDULING    = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-scheduling"
-    IMG_PROFILES      = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-profiles"
-    IMG_NOTIFICATIONS = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-notifications"
-    IMG_WEB           = "${DOCKER_REGISTRY}/${DOCKER_NAMESPACE}/clinicflow-web"
+    // Used as image tag
+    TAG = "sha-${env.GIT_COMMIT.take(7)}"
 
-    // GitOps repo (edit to your real URL)
-    // IMPORTANT: Use a plain https URL here (no bash tricks).
-    GITOPS_REPO_URL = "https://github.com/Bludive-Devops-Platform/clinicflow-gitops.git"
-    GITOPS_BRANCH   = "main"
-  }
-
-  options {
-    timestamps()
-    disableConcurrentBuilds()
+    // Git identity for commits to GitOps repo
+    GIT_AUTHOR_NAME  = 'jenkins'
+    GIT_AUTHOR_EMAIL = 'jenkins@local'
   }
 
   stages {
-    stage("Checkout") {
+    stage('Detect changes') {
       steps {
-        checkout scm
-        sh 'git rev-parse --short=7 HEAD > .gitsha'
         script {
-          env.GIT_SHA = readFile('.gitsha').trim()
-          env.IMAGE_TAG = "sha-${env.GIT_SHA}"
-        }
-        echo "IMAGE_TAG=${env.IMAGE_TAG}"
-      }
-    }
+          sh "git fetch origin +refs/heads/*:refs/remotes/origin/* --prune"
 
-    stage("Detect Build Mode (PR vs Main)") {
-      steps {
-        script {
-          env.IS_PR = (env.CHANGE_ID ? "true" : "false")
-          echo "IS_PR=${env.IS_PR}"
-          if (env.IS_PR == "true") {
-            echo "PR Build detected: will NOT push images and will NOT update GitOps."
+          def from = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+          def to = env.GIT_COMMIT
+
+          def range = ""
+          if (from?.trim()) {
+            range = "${from}..${to}"
           } else {
-            echo "Main branch build detected: can push images + update GitOps (unless DRY_RUN=true)."
+            // first run fallback
+            range = "origin/main..HEAD"
           }
+
+          echo "Diff range: ${range}"
+
+          def changedFiles = sh(
+            script: "git diff --name-only ${range}",
+            returnStdout: true
+          ).trim()
+
+          if (!changedFiles) {
+            echo "No file changes detected."
+            env.CHANGED = ""
+            currentBuild.description = "No changes"
+            return
+          }
+
+          def changed = [] as Set
+          changedFiles.split('\n').each { f ->
+            if (f.startsWith('services/identity/')) changed << 'identity'
+            if (f.startsWith('services/scheduling/')) changed << 'scheduling'
+            if (f.startsWith('services/profiles/')) changed << 'profiles'
+            if (f.startsWith('services/notifications/')) changed << 'notifications'
+            if (f.startsWith('apps/web/')) changed << 'web'
+          }
+
+          if (changed.isEmpty()) {
+            env.CHANGED = ""
+            currentBuild.description = "No service changes"
+            echo "No relevant service changes."
+            return
+          }
+
+          env.CHANGED = changed.join(',')
+          currentBuild.description = "Changed: ${env.CHANGED} | ${env.TAG}"
+          echo "Services changed: ${env.CHANGED}"
         }
       }
     }
 
-    stage("Detect Changed Services") {
+    stage('Build & push (only changed)') {
+      when { expression { return env.CHANGED?.trim() } }
       steps {
         script {
-          def changedFiles = ""
-          def targets = []
+          def services = env.CHANGED.split(',') as List
 
-          sh "git fetch --all --prune"
+          // Must match your Jenkins multibranch job names
+          def jobMap = [
+            identity      : 'clinicflow-identity',
+            scheduling    : 'clinicflow-scheduling',
+            profiles      : 'clinicflow-profiles',
+            notifications : 'clinicflow-notifications',
+            web           : 'clinicflow-web'
+          ]
 
-          try {
-            if (params.FORCE_ALL) {
-              targets = ["identity","scheduling","profiles","notifications","web"]
-              changedFiles = "(FORCE_ALL enabled)"
-            } else if (env.IS_PR == "true") {
-              def targetBranch = env.CHANGE_TARGET ? env.CHANGE_TARGET : "main"
-              changedFiles = sh(
-                script: "git diff --name-only origin/${targetBranch}...HEAD",
-                returnStdout: true
-              ).trim()
-            } else {
-              changedFiles = sh(
-                script: "git diff --name-only HEAD~1..HEAD",
-                returnStdout: true
-              ).trim()
-            }
-          } catch (e) {
-            echo "Diff detection failed; falling back to build ALL services. Reason: ${e}"
-            targets = ["identity","scheduling","profiles","notifications","web"]
-          }
-
-          if (!params.FORCE_ALL && targets.isEmpty()) {
-            if (changedFiles?.trim()) {
-              if (changedFiles.contains("services/identity/"))      targets << "identity"
-              if (changedFiles.contains("services/scheduling/"))    targets << "scheduling"
-              if (changedFiles.contains("services/profiles/"))      targets << "profiles"
-              if (changedFiles.contains("services/notifications/")) targets << "notifications"
-              if (changedFiles.contains("apps/web/"))               targets << "web"
+          def builds = [:]
+          services.each { svc ->
+            builds[svc] = {
+              build job: jobMap[svc],
+                parameters: [
+                  string(name: 'IMAGE_TAG', value: env.TAG)
+                ],
+                wait: true
             }
           }
-
-          targets = targets.unique()
-          env.TARGETS = targets.join(",")
-
-          echo "Changed files:\n${changedFiles}"
-          echo "Targets: ${env.TARGETS}"
-
-          if (targets.size() == 0) {
-            echo "No service folder changes detected. Pipeline will skip build/push/deploy."
-          }
+          parallel builds
         }
       }
     }
 
-    stage("Docker Login (main only)") {
-      when { expression { return env.IS_PR == "false" && !params.DRY_RUN && env.TARGETS?.trim() } }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
-          sh 'echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
-        }
-      }
-    }
-
-    stage("Build Selected Images") {
-      when { expression { return env.TARGETS?.trim() } }
+    stage('Update GitOps DEV') {
+      when { expression { return env.CHANGED?.trim() } }
       steps {
         script {
-          def targets = env.TARGETS.tokenize(',')
-
-          for (t in targets) {
-            if (t == "identity") {
-              sh "docker build -t ${IMG_IDENTITY}:${IMAGE_TAG} ./services/identity"
-            }
-            if (t == "scheduling") {
-              sh "docker build -t ${IMG_SCHEDULING}:${IMAGE_TAG} ./services/scheduling"
-            }
-            if (t == "profiles") {
-              sh "docker build -t ${IMG_PROFILES}:${IMAGE_TAG} ./services/profiles"
-            }
-            if (t == "notifications") {
-              sh "docker build -t ${IMG_NOTIFICATIONS}:${IMAGE_TAG} ./services/notifications"
-            }
-            if (t == "web") {
-              sh "docker build -t ${IMG_WEB}:${IMAGE_TAG} ./apps/web"
-            }
-          }
+          updateGitOps('dev', env.CHANGED.split(',') as List, env.TAG)
         }
       }
     }
 
-    stage("Push Selected Images (main only)") {
-      when { expression { return env.IS_PR == "false" && !params.DRY_RUN && env.TARGETS?.trim() } }
+    stage('Approve → STAGING') {
+      when { expression { return env.CHANGED?.trim() } }
       steps {
         script {
-          def targets = env.TARGETS.tokenize(',')
-
-          for (t in targets) {
-            if (t == "identity")      sh "docker push ${IMG_IDENTITY}:${IMAGE_TAG}"
-            if (t == "scheduling")    sh "docker push ${IMG_SCHEDULING}:${IMAGE_TAG}"
-            if (t == "profiles")      sh "docker push ${IMG_PROFILES}:${IMAGE_TAG}"
-            if (t == "notifications") sh "docker push ${IMG_NOTIFICATIONS}:${IMAGE_TAG}"
-            if (t == "web")           sh "docker push ${IMG_WEB}:${IMAGE_TAG}"
-          }
+          input message: "Promote ${env.CHANGED} to STAGING with ${env.TAG}?"
+          updateGitOps('staging', env.CHANGED.split(',') as List, env.TAG)
         }
       }
     }
 
-    stage("Approval Gate (staging/prod only)") {
-      when {
-        expression {
-          return env.IS_PR == "false" &&
-                 !params.DRY_RUN &&
-                 env.TARGETS?.trim() &&
-                 (params.ENV == "staging" || params.ENV == "prod")
-        }
-      }
+    stage('Approve → PROD') {
+      when { expression { return env.CHANGED?.trim() } }
       steps {
         script {
-          def msg = "Approve deployment to ${params.ENV} for tag ${env.IMAGE_TAG} (services: ${env.TARGETS})?"
-          timeout(time: 30, unit: 'MINUTES') {
-            input message: msg, ok: "Approve"
-          }
-        }
-      }
-    }
-
-    stage("Update GitOps Values (main only)") {
-      when { expression { return env.IS_PR == "false" && !params.DRY_RUN && env.TARGETS?.trim() } }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'gitops-token', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
-          script {
-            // Build an authenticated clone URL safely in Groovy
-            def authedRepo = env.GITOPS_REPO_URL.replace("https://", "https://${GIT_USER}:${GIT_TOKEN}@")
-            env.GITOPS_AUTHED_URL = authedRepo
-          }
-
-          sh """
-            set -e
-
-            rm -rf /tmp/clinicflow-gitops
-            git clone -b ${GITOPS_BRANCH} "${GITOPS_AUTHED_URL}" /tmp/clinicflow-gitops
-            cd /tmp/clinicflow-gitops
-
-            VALUES_FILE="environments/${ENV}/values.yaml"
-            test -f "$VALUES_FILE"
-
-            TARGETS="${TARGETS}"
-            IMAGE_TAG="${IMAGE_TAG}"
-
-            python3 - << 'PY'
-import os, yaml
-
-values_file = os.environ["VALUES_FILE"]
-targets = [t.strip() for t in os.environ["TARGETS"].split(",") if t.strip()]
-image_tag = os.environ["IMAGE_TAG"]
-
-with open(values_file, "r") as f:
-    data = yaml.safe_load(f) or {}
-
-data.setdefault("images", {})
-for svc in targets:
-    data["images"].setdefault(svc, {})
-    data["images"][svc]["tag"] = image_tag
-
-with open(values_file, "w") as f:
-    yaml.safe_dump(data, f, sort_keys=False)
-
-print(f"Updated {values_file} services={targets} -> tag={image_tag}")
-PY
-
-            git status
-            git config user.email "jenkins@bludive.local"
-            git config user.name "Jenkins CI"
-
-            git add "$VALUES_FILE"
-            git commit -m "Deploy ${ENV}: ${IMAGE_TAG} (services: ${TARGETS})" || echo "No changes to commit"
-            git push origin ${GITOPS_BRANCH}
-          """
+          input message: "Promote ${env.CHANGED} to PROD with ${env.TAG}?"
+          updateGitOps('prod', env.CHANGED.split(',') as List, env.TAG)
         }
       }
     }
   }
+}
 
-  post {
-    always {
-      sh 'docker logout || true'
-    }
-    success {
-      script {
-        if (env.TARGETS?.trim()) {
-          if (env.IS_PR == "true") {
-            echo "✅ PR build complete: Built ${env.TARGETS} tag=${env.IMAGE_TAG}. (No push/deploy)"
-          } else if (params.DRY_RUN) {
-            echo "✅ Main build DRY_RUN complete: Built ${env.TARGETS} tag=${env.IMAGE_TAG}. (No push/deploy)"
-          } else {
-            echo "✅ Main build complete: Built+pushed ${env.TARGETS} tag=${env.IMAGE_TAG}. GitOps updated for ENV=${params.ENV}."
-          }
-        } else {
-          echo "✅ No service changes detected. Nothing built/pushed/deployed."
-        }
+def updateGitOps(envName, services, tag) {
+  dir("gitops") {
+    deleteDir()
+
+    // If your GitOps repo is private over HTTPS, use credentials
+    withCredentials([usernamePassword(credentialsId: 'gitops-https-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_PASS')]) {
+
+      sh """
+        git config --global user.name "${GIT_AUTHOR_NAME}"
+        git config --global user.email "${GIT_AUTHOR_EMAIL}"
+      """
+
+      // Embed creds for clone/push (works for CI)
+      def authedRepo = GITOPS_REPO.replace("https://", "https://${GIT_USER}:${GIT_PASS}@")
+
+      sh """
+        git clone -b ${GITOPS_BRANCH} ${authedRepo} .
+      """
+
+      def valuesFile = "environments/${envName}/values.yaml"
+
+      // Update only changed services’ image tags
+      services.each { svc ->
+        sh """yq -i '.images.${svc}.tag = "${tag}"' ${valuesFile}"""
       }
+
+      sh """
+        git add ${valuesFile}
+        git commit -m "deploy(${envName}): ${services.join(',')} -> ${tag}" || true
+        git push origin ${GITOPS_BRANCH}
+      """
     }
   }
 }
