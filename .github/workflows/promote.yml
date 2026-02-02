@@ -1,0 +1,82 @@
+name: Promote selected services (Staging/Prod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - prod
+      tag:
+        description: "Image tag to promote (example: sha-abc1234)"
+        required: true
+      services:
+        description: "Comma-separated services to promote: identity,scheduling,profiles,notifications,web"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote to ${{ inputs.target_env }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}   # <- this triggers GitHub Environment approval
+    steps:
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Patch target env values for selected services
+        run: |
+          cd gitops
+          FILE="environments/${{ inputs.target_env }}/values.yaml"
+          TAG="${{ inputs.tag }}"
+
+          # Normalize service list
+          SERVICES="${{ inputs.services }}"
+          SERVICES="$(echo "$SERVICES" | tr -d ' ')"   # remove spaces
+          IFS=',' read -ra arr <<< "$SERVICES"
+
+          for svc in "${arr[@]}"; do
+            case "$svc" in
+              identity|scheduling|profiles|notifications|web)
+                yq -i ".images.${svc}.tag = \"${TAG}\"" "$FILE"
+                ;;
+              *)
+                echo "Unknown service: $svc"
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "Updated ${FILE}:"
+          git diff -- "$FILE" || true
+
+      - name: Commit & push
+        run: |
+          cd gitops
+          NAME="${{ secrets.GITOPS_COMMIT_NAME }}"
+          EMAIL="${{ secrets.GITOPS_COMMIT_EMAIL }}"
+          [ -z "$NAME" ] && NAME="github-actions"
+          [ -z "$EMAIL" ] && EMAIL="github-actions@users.noreply.github.com"
+
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+
+          FILE="environments/${{ inputs.target_env }}/values.yaml"
+          git add "$FILE"
+          git commit -m "promote(${{ inputs.target_env }}): ${{ inputs.services }} -> ${{ inputs.tag }}" || exit 0
+          git push

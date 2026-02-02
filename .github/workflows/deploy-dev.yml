@@ -1,0 +1,188 @@
+name: Build & Deploy DEV (changed services only)
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has_changes: ${{ steps.set-matrix.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed files
+        id: diff
+        run: |
+          git fetch origin main --prune
+          # Compare current commit to previous commit on main
+          PREV="$(git rev-parse HEAD^)"
+          echo "prev=$PREV" >> $GITHUB_OUTPUT
+          echo "curr=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+          echo "Changed files:"
+          git diff --name-only "$PREV" "$GITHUB_SHA" | tee changed.txt
+
+      - name: Build service matrix
+        id: set-matrix
+        run: |
+          CHANGED="$(cat changed.txt || true)"
+
+          services=()
+
+          echo "$CHANGED" | grep -q '^services/identity/' && services+=("identity") || true
+          echo "$CHANGED" | grep -q '^services/scheduling/' && services+=("scheduling") || true
+          echo "$CHANGED" | grep -q '^services/profiles/' && services+=("profiles") || true
+          echo "$CHANGED" | grep -q '^services/notifications/' && services+=("notifications") || true
+          echo "$CHANGED" | grep -q '^apps/web/' && services+=("web") || true
+
+          if [ ${#services[@]} -eq 0 ]; then
+            echo 'has_changes=false' >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[]}' >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Create a JSON matrix with build context + image name
+          # Tag is always sha-<shortsha>
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          json='{"include":['
+          first=1
+          for svc in "${services[@]}"; do
+            [ $first -eq 0 ] && json+=','
+            first=0
+
+            if [ "$svc" = "identity" ]; then ctx="services/identity"; img="docker.io/bludivehub/clinicflow-identity"; fi
+            if [ "$svc" = "scheduling" ]; then ctx="services/scheduling"; img="docker.io/bludivehub/clinicflow-scheduling"; fi
+            if [ "$svc" = "profiles" ]; then ctx="services/profiles"; img="docker.io/bludivehub/clinicflow-profiles"; fi
+            if [ "$svc" = "notifications" ]; then ctx="services/notifications"; img="docker.io/bludivehub/clinicflow-notifications"; fi
+            if [ "$svc" = "web" ]; then ctx="apps/web"; img="docker.io/bludivehub/clinicflow-web"; fi
+
+            json+='{"service":"'"$svc"'","context":"'"$ctx"'","image":"'"$img"'","tag":"sha-'"$SHORT_SHA"'"}'
+          done
+          json+=']}'
+
+          echo "Matrix: $json"
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "matrix=$json" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    name: Build & Push images
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ matrix.image }}:${{ matrix.tag }}
+
+  update-gitops-dev:
+    name: Update GitOps DEV values
+    needs: [detect-changes, build-and-push]
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Patch DEV values for changed services only
+        run: |
+          cd gitops
+          FILE="environments/dev/values.yaml"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="sha-${SHORT_SHA}"
+
+          # Recompute changed services for safety
+          # (Simple approach: read from the app repo diff again using GitHub SHA data is not available here)
+          # We’ll patch based on the same known service paths by embedding logic into workflow:
+          # Instead, we use the matrix we already created — store it as artifact? Keep simple:
+          echo "Patching DEV with tag ${TAG} for services built in this run."
+
+          # Hard patch: update only keys that exist in values file for those services
+          # We'll patch based on changed detection again by using git diff in app repo (not available here).
+          # So we patch all service tags that match this commit ONLY if their Docker images were built.
+          # We'll do that by reading workflow summary from env file created below.
+
+      - name: Create services list file from commit diff
+        uses: actions/checkout@v4
+        with:
+          path: apprepo
+          fetch-depth: 0
+
+      - name: Apply yq updates
+        run: |
+          cd gitops
+          FILE="environments/dev/values.yaml"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="sha-${SHORT_SHA}"
+
+          cd ../apprepo
+          git fetch origin main --prune
+          PREV="$(git rev-parse HEAD^)"
+          CURR="${GITHUB_SHA}"
+          CHANGED="$(git diff --name-only "$PREV" "$CURR")"
+          echo "$CHANGED" | tee /tmp/changed.txt
+
+          cd ../gitops
+
+          if grep -q '^services/identity/' /tmp/changed.txt; then yq -i ".images.identity.tag = \"${TAG}\"" "$FILE"; fi
+          if grep -q '^services/scheduling/' /tmp/changed.txt; then yq -i ".images.scheduling.tag = \"${TAG}\"" "$FILE"; fi
+          if grep -q '^services/profiles/' /tmp/changed.txt; then yq -i ".images.profiles.tag = \"${TAG}\"" "$FILE"; fi
+          if grep -q '^services/notifications/' /tmp/changed.txt; then yq -i ".images.notifications.tag = \"${TAG}\"" "$FILE"; fi
+          if grep -q '^apps/web/' /tmp/changed.txt; then yq -i ".images.web.tag = \"${TAG}\"" "$FILE"; fi
+
+          echo "Updated DEV values:"
+          git diff -- "$FILE" || true
+
+      - name: Commit & push GitOps change
+        run: |
+          cd gitops
+          NAME="${{ secrets.GITOPS_COMMIT_NAME }}"
+          EMAIL="${{ secrets.GITOPS_COMMIT_EMAIL }}"
+          [ -z "$NAME" ] && NAME="github-actions"
+          [ -z "$EMAIL" ] && EMAIL="github-actions@users.noreply.github.com"
+
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+
+          FILE="environments/dev/values.yaml"
+          git add "$FILE"
+          git commit -m "deploy(dev): update image tags for ${GITHUB_SHA::7}" || exit 0
+          git push
