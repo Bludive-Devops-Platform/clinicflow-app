@@ -1,6 +1,6 @@
 # ClinicFlow — Clinic Appointment Platform (Microservices)
 
-ClinicFlow is a simple-but-powerful, production‑style clinic appointment system built with **microservices**, **separate databases per service**, and a clean **patient/staff/admin web UI**. It is designed for enterprise demos and real-world platform discussions (availability, persistence, observability, GitOps, Kubernetes readiness).
+ClinicFlow is a simple-but-powerful, production‑style clinic appointment system built with **microservices**, **separate databases per service**, and a clean **patient/staff/admin web UI**. It is designed for enterprise demos and real-world platform discussions (availability, persistence, observability, GitOps, Kubernetes readiness)...
 
 ---
 
