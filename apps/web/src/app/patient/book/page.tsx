@@ -88,7 +88,7 @@ export default function BookPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold">Book an appointment with us now</h1>
+        <h1 className="text-2xl font-semibold">Book an appointment with us quickly</h1>
         <p className="text-sm text-gray-500 mt-1">
           Pick a service and a time — we’ll assign the first available provider.
         </p>
